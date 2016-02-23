@@ -1,0 +1,430 @@
+#include "WPILib.h"
+
+#define JOYSTICK_DEADBAND (0.1)
+//#define M_AUTO_STOP (0)
+//#define M_AUTO_DRIVE_ONE (1)
+//#define M_AUTO_LIFT (2)
+#define M_AUTO_DRIVE_TWO (3)
+#define M_AUTO_DROP (4)
+#define M_MONTANA (0) 	  // ON STATE
+#define M_CALIFORNIA (1) // OFF STATE
+#define M_NOAH (2)	// NOTHING TO US
+//the scissors lift will be named Lizard Lift in the code
+//the game pad controller will be named Ben in the code
+
+class Robot: public IterativeRobot {
+	// Channels for the wheels
+	RobotDrive robotDrive; // robot drive system (tankdrive uses 2 encoders)
+	Joystick m_RichardRightStick;			//Richard= right joystick
+	Joystick m_AaronLeftStick;			//Aaron= left joystick
+	Talon m_lizardLiftMotor;					//the scissor lift motor
+	DigitalInput m_topLimitSwitch;
+	DigitalInput m_bottomLimitSwitch;
+	AnalogInput m_sonicAlex;			//ultra sonic sensor when we use this later put m_sonicAlex.Get()    Operates from 2.5-5.5V
+	Joystick m_benController;			//this is the game controller
+	Talon  m_leftLauncherMotor; 		// left launcher  motor
+	Talon m_rightLauncherMotor; 		//right launcher motor
+	Talon m_winchMotor;					//the winch motor
+	Talon m_elevMotor;					// elevation for shooter (encoder)
+	DigitalInput m_lizardLimitSwitch;	//the lizard lift top limit switch
+	Servo m_servo;						//loads the ball into the shooter
+
+	//Solenoid m_LED;						// For LED lights
+
+	Timer m_timer;
+
+	Encoder *enc;
+	CameraServer *cam;
+	CameraServer *cam0;
+
+	int m_autoCase = M_CALIFORNIA;
+	int m_counter =0;
+	const static int LeftTrackChannel = 1;		//LeftTrackChannel motor
+	const static int RightTrackChannel = 0;		//RightTrackChannel motor
+	const static int RichardRightStickChannel = 0;
+	const static int AaronLeftStickChannel = 1;
+	const static int lizardLiftChannel = 5;
+	const static int topLimitChannel = 8;
+	const static int bottomLimitChannel = 9;
+	const static int sonicAlexChannel = 2;
+	const static int benControllerChannel = 2;
+	const static int LeftLauncherChannel = 3;
+	const static int RightLauncherChannel = 2;
+	const static int winchChannel = 4;
+	const static int elevChannel = 6;
+	const static int lizardLimitChannel = 6;
+	const static int servoChannel = 7;
+
+	const static int ledChannel = 7;	// DIO Channel 7
+
+	const static int GreenBtn = 1;		//buttons #s start at 1
+	const static int RedBtn = 2;
+	const static int BlueBtn = 3;
+	const static int YellowBtn = 4;
+	const static int LeftBumperBtn = 5;
+	const static int RightBumperBtn = 6;
+	const static int BackBtn = 7;
+	const static int StartBtn = 8;
+
+	const static int LeftXAxis = 0;
+	const static int LeftYAxis = 1;
+	const static int LeftTriggerAxis = 2;
+	const static int RightTriggerAxis = 3;
+	const static int RightXAxis = 4;
+	const static int RightYAxis = 5;
+
+	const static int POVAngle = 0;
+
+	const double autonomousSpeed = 0.5;
+
+	const int countsPerSecond = 50;
+	const double nbrSecondsToPressButton = 3.0;
+//	const double nbrSecondsBeforeClimbing = 2.25*60.0; // Two minutes 15 seconds, in seconds.
+// For testing, use a shorter wait time.
+	const double nbrSecondsBeforeClimbing = 0.25*60.0; // 15 seconds.
+
+	const double safetyCounts = nbrSecondsToPressButton * countsPerSecond;
+	const double noClimbCounts = nbrSecondsBeforeClimbing * countsPerSecond;
+	const double initialLiftSpeed = 1.0;
+
+	const double launcherMotorSpeed = 0.75;
+    const double loaderMotorSpeed = 0.4;
+    const double tankDriveGain = 0.9;
+
+	/* const static */ const double shooterRetractAngle = 0.0;   // servo angle in retracted position
+	/* const static */ double shooterLoadAngle =   45.0;   // servo angle to load shooter
+
+	double m_tempvalue = 0.0;
+
+	bool lizardFlag = true;	// Will go to false once the lift limit switch has been pressed.
+
+	int safetyCounter = 0;	// To prevent accidental triggering of the lift.
+	int noClimbCounter = 0;
+	int taperCounter = 0;	// For tapering the lift speed.
+	int liftingCounter = 0; // How long have we been lifting?
+
+    /* We would like the lift motor to start strong, then taper down.
+     *   At full power, it takes about 4 seconds for the lift to go up/down.
+     *   We'd like to begin tapering at 1 second, continue tapering for two seconds,
+     *   then remain constant after 3 seconds.  Assuming we want to taper down
+     *   to 1/4 power during the middle two seconds, we want to decrease speed
+     *   by a factor of exp(-k) each timer-click.  The timer clicks 50 times/sec,
+     *   so two seconds of tapering will require 100 timer clicks.  We therefore
+     *   want exp(-k*100) = 1/4,
+     *   or   exp(k*100) = 4
+     *   or   k*100 = ln(4) = 1.38629436
+     *   or   k = 1.38629436*10^-2.
+     *   Thus, each timer click in the middle 2 seconds will reduce the speed
+     *   by a factor of exp(-k) = 0.986232704.
+     *   Check:  (0.986232704)^100 = 0.25
+     *
+     *   Oops.  1/4 speed is too slow.  Aim for 1/2 speed:
+     *   exp(-k*100) = 1/2
+     *   exp(k*100) = 2
+     *   k*100 = ln(2) = 6.93147180 * 10^-1
+     *   k = 6.93147180 * 10^3
+     *   exp(-k) = 9.93092495 * 10^-1
+     *   Check: (0.993092495)^100 = 0.5
+     *
+     */
+
+	const double taperFactorPerClick = 0.9993092495;
+	double liftSpeed;
+
+	double winchSpeed = 0.8;
+
+public:
+	Robot() :
+		robotDrive(LeftTrackChannel, RightTrackChannel),
+		m_RichardRightStick(RichardRightStickChannel), // initialize the joystick on port 0 (right side)
+		m_AaronLeftStick(AaronLeftStickChannel), // initialize the Joystick on port 1 (left side)
+		m_lizardLiftMotor{lizardLiftChannel},	//curly braces meaning the same thing as the ( )
+		m_topLimitSwitch(topLimitChannel),
+		m_bottomLimitSwitch(bottomLimitChannel),
+		m_sonicAlex(sonicAlexChannel),
+		m_benController(benControllerChannel),
+		m_leftLauncherMotor(LeftLauncherChannel),
+		m_rightLauncherMotor(RightLauncherChannel),
+		m_winchMotor(winchChannel),
+		m_elevMotor(elevChannel),
+		m_lizardLimitSwitch(lizardLimitChannel),
+		m_servo(servoChannel)
+		//m_LED(ledChannel) //LED solenoid lights
+
+		{
+			robotDrive.SetExpiration(0.1);	//Number of seconds it takes to timeout
+			robotDrive.SetInvertedMotor(RobotDrive::kRearRightMotor, true);	// invert the left side motors
+			robotDrive.SetInvertedMotor(RobotDrive::kRearLeftMotor, true);// you may need to change or remove this to match your robot
+
+			enc = new Encoder(4, 5, false, Encoder::EncodingType::k4X);	//first two equal port numbers
+			// enc->SetMaxPeriod(0.1);  (Not needed)
+			enc->SetMinRate(10);
+			enc->SetDistancePerPulse(5);
+			enc->SetReverseDirection(true);
+			enc->SetSamplesToAverage(7);
+
+			cam= CameraServer::GetInstance();
+			cam->SetQuality(50);
+			cam->StartAutomaticCapture("cam1");
+			//   http://roborio-4243-frc.local/ must use Internet Explorer to find where
+			//this is located at while connected to the robo rio
+			//the camera name (ex "cam0") can be found through the roborio web interface
+			//CameraServer::GetInstance()->StartAutomaticCapture("cam1");
+			//takes around 40 seconds to come up.
+			// sometimes need to delete the usb webcam box and put a new one in place of it
+			// go chance that we will have to lower the resolution for competition
+			cam0= CameraServer::GetInstance();
+			cam0->SetQuality(50);
+			cam0->StartAutomaticCapture("cam1");
+
+			liftSpeed = initialLiftSpeed;
+		}
+
+		void AutonomousInit() {
+			m_timer.Reset();
+			m_timer.Start();
+			//	m_autoDriveTimer = SmartDashboard::GetNumber("Autonomous Drive Timer", 4.0);
+			//	SmartDashboard::PutNumber("Autonomous Drive Timer", m_autoDriveTimer);
+			m_autoCase =  M_MONTANA;
+
+			//Debugging:
+			SmartDashboard::PutString( "AutoInit_Message ", "Inside AutonomousInit() ");
+
+		}
+		/*void DisabledInit(){
+	 m_disabled=true;
+	 }
+	 void DisabledPeriodic(){
+	 m_disabled=true;
+	 SmartDashboard::PutBoolean("Disabled",m_disabled);
+	 }*/
+
+		void AutonomousPeriodic() {
+
+			//Debugging:
+			SmartDashboard::PutString( "AutoPeriodic_Message ", "Inside AutonomousPeriodic() ");
+
+			if (m_counter >= 4) {				//does the counter equal 4?
+				m_autoCase = M_NOAH;
+			}
+			if (m_autoCase ==M_MONTANA) {	  // does it equal MONTANA?
+				if (m_timer.Get() <= 3.0) {  //the robot is on for 3 seconds
+					robotDrive.TankDrive(autonomousSpeed, autonomousSpeed);			//first number is the left track, the second number is the right track
+				}
+				else {
+					m_autoCase = M_CALIFORNIA;
+				}
+			}
+			if (m_autoCase == M_CALIFORNIA) {						//does it equal CALIFORNIA?
+				if (m_timer.Get() > 3.0 && m_timer.Get() <= 4.5) { // the robot will be off for 1.5 seconds
+					robotDrive.TankDrive(0.0, 0.0);
+				}
+				else {
+					m_timer.Reset ();
+					m_autoCase = M_MONTANA;
+					m_counter = m_counter +1;
+				}
+			}
+			if (m_autoCase == M_NOAH) {
+				robotDrive.TankDrive(0.0, 0.0);
+				// NO QUIT GO HOME TRATORS NOT UP FOR DBAT8
+			}
+		}
+
+		void TeleopInit() {
+			SmartDashboard::PutNumber("distance per pulse 1 ", m_tempvalue);
+			//this has to be here in order to get PutNumber to work in teleop periodic
+			safetyCounter = 0;
+			noClimbCounter = 0;
+			lizardFlag = true;
+			taperCounter = 0;
+
+			// It really is necessary to initialize liftSpeed here,
+			//   because we taper it off during teleop.
+			liftSpeed = initialLiftSpeed;
+		}
+
+		void TeleopPeriodic() {
+			noClimbCounter++;
+
+			SmartDashboard::PutNumber("LAUNCHER ANGLE", enc->Get());
+			m_tempvalue = SmartDashboard::GetNumber("distance per pulse 1 ", -1.0);
+			//default is negative to make it easy to see
+			//this has to be the same label in teleop init
+			//SmartDashboard::PutNumber("distance per pulse ", m_tempvalue);
+			enc->SetDistancePerPulse(m_tempvalue);
+
+			SmartDashboard::PutNumber("encoder direction ", enc->GetDirection());
+
+			SmartDashboard::PutNumber("encoder distance ", enc->GetDistance());
+			SmartDashboard::PutNumber("Servo Position",m_servo.GetAngle());
+			SmartDashboard::PutNumber("red button ", m_benController.GetRawButton(RedBtn)); //Button B: retract shooter
+			SmartDashboard::PutNumber("blue button ", m_benController.GetRawButton(BlueBtn));
+			SmartDashboard::PutNumber("green button ", m_benController.GetRawButton(GreenBtn));
+			SmartDashboard::PutNumber("yellow button ", m_benController.GetRawButton(YellowBtn));
+			SmartDashboard::PutNumber("right bumper button ", m_benController.GetRawButton(RightBumperBtn));
+			SmartDashboard::PutNumber("left bumper button ", m_benController.GetRawButton(LeftBumperBtn));
+			SmartDashboard::PutNumber("start button ", m_benController.GetRawButton(StartBtn));
+			SmartDashboard::PutNumber("back button ", m_benController.GetRawButton(BackBtn));
+
+			SmartDashboard::PutNumber("right x ", m_benController.GetRawAxis(RightXAxis));
+			SmartDashboard::PutNumber("right y ", m_benController.GetRawAxis(RightYAxis));
+			SmartDashboard::PutNumber("left x ", m_benController.GetRawAxis(LeftXAxis));
+			SmartDashboard::PutNumber("left y ", m_benController.GetRawAxis(LeftYAxis));
+			SmartDashboard::PutNumber("right trigger ", m_benController.GetRawAxis(RightTriggerAxis));
+			SmartDashboard::PutNumber("left trigger ", m_benController.GetRawAxis(LeftTriggerAxis));
+
+			SmartDashboard::PutNumber("POV angle ", m_benController.GetPOV(POVAngle));
+
+			SmartDashboard::PutNumber("bottomLimitSwitch ", m_bottomLimitSwitch.Get() );
+			SmartDashboard::PutNumber("topLimitSwitch ", m_topLimitSwitch.Get() );
+
+			SmartDashboard::PutNumber("lizard lift speed ", m_lizardLiftMotor.Get()) ;
+			SmartDashboard::PutNumber("lift speed setting ", initialLiftSpeed) ;
+
+			SmartDashboard::PutNumber("noClimbCounter ", noClimbCounter) ;
+			SmartDashboard::PutNumber("safetyCounter ", safetyCounter) ;
+			SmartDashboard::PutNumber("lizard limit switch ", m_lizardLimitSwitch.Get()) ;
+			SmartDashboard::PutNumber("lizard flag ", lizardFlag);
+
+			SmartDashboard::PutNumber("ultraSonicSensor ",m_sonicAlex.GetVoltage());
+			//   http://www.maxbotix.com/articles/032.htm
+			//how to translate voltage to distance.
+
+			// *TANKDRIVE*
+			// robotDrive.TankDrive(m_RichardRightStick, m_AaronLeftStick);
+			// robotDrive.TankDrive(m_RichardRightStick.GetRawAxis(1) * tankDriveGain  , m_AaronLeftStick.GetRawAxis(1) * tankDriveGain);
+
+			//* ARCADE DRIVE *
+			robotDrive.ArcadeDrive(m_RichardRightStick.GetRawAxis(1) * tankDriveGain  , m_RichardRightStick.GetRawAxis(0) * tankDriveGain, true);
+				// move_Forward_Back_value, rotate_value, squared_inputs=YES
+
+			// *LIZARD LIFT*
+//			// Do NOT trigger lift during the no-climb time.
+			if (noClimbCounter >= noClimbCounts) { //Past the no-climb period.
+				if (m_benController.GetRawButton(YellowBtn)) {
+					//First update and check the safety timer.
+					safetyCounter++;
+					if (safetyCounter >= safetyCounts) { // Past the safety-wait time.
+						//lizard lift going up if the yellow button is pressed and the limit switch not pressed
+						//If yellow button(Y) is pressed it will go up on a Tuesday
+						liftingCounter++;
+						if (	(liftingCounter > countsPerSecond)
+							and (liftingCounter <= 3*countsPerSecond) ){
+							liftSpeed = liftSpeed * taperFactorPerClick;
+						}
+						if (m_lizardLimitSwitch.Get()) {
+							//If the top limit switch is not pressed
+							if (lizardFlag) {
+								// m_lizardLiftMotor.SetSpeed(initialLiftSpeed);//Run lizard lift motor at a quarter power
+								m_lizardLiftMotor.SetSpeed(liftSpeed);
+							}//endif lizardFlag
+
+						}
+						else { //If top limit switch is pressed
+							lizardFlag = false;  // Latch the value (remember it).
+							m_lizardLiftMotor.SetSpeed(0.0);		//Stop launcher motor
+						} //endif limit switch is not pressed -- else
+
+					}
+					else { // safety-wait not over.  Keep waiting.
+						m_lizardLiftMotor.SetSpeed(0.0);		//Stop launcher motor
+					} //endif safetyCounter past safetyCounts -- else
+
+				}
+				else { // Yellow button is not pressed.
+					safetyCounter = 0;  // Reset the safety counter
+					m_lizardLiftMotor.SetSpeed(0.0);		//Stop launcher motor
+				}
+			}//endif past the no-climb period.
+
+			/* Bringing the lift DOWN is NOT subject to safety checks.  Allow it at any time.
+			 *   But it resets the safety counter.
+			 *   ALSO:  It activates the winch, to raise the robot if the hook is set,
+			 *     and to retract the winch cables whether the hook is set or not.
+			 */
+			if (m_benController.GetRawButton(GreenBtn)  ) {
+				//If green button (GreenBtn) is pressed it will go down in the dm
+				m_lizardLiftMotor.SetSpeed(-0.5*initialLiftSpeed );
+				safetyCounter = 0;
+
+				m_winchMotor.SetSpeed(winchSpeed);
+			}//endif green (Down) button pressed.
+
+
+			// *WINCH*
+			if (m_benController.GetPOV(POVAngle) == 0) {
+				//If up directional button is pressed it will go up
+				m_winchMotor.SetSpeed(-winchSpeed);
+			}
+			else if (m_benController.GetPOV(POVAngle) == 180) {
+				//If down directional button is pressed it will go down
+				m_winchMotor.SetSpeed(winchSpeed);
+			}
+			else {
+				m_winchMotor.SetSpeed(0.0);
+			}
+
+
+			// *LAUNCHER ROTATION DIRECTION*  //switched #s
+			if (m_benController.GetRawButton(LeftBumperBtn)) { //this will load a boulder
+				//If the left bumper is pressed it will rotate back towards the robot
+				m_leftLauncherMotor.SetSpeed(-loaderMotorSpeed);//Run lefty launcher motor at a quarter power
+				m_rightLauncherMotor.SetSpeed(loaderMotorSpeed);//Run righty launcher motor at a quarter power
+			}
+			else if (m_benController.GetRawButton(RightBumperBtn)  ) { // this will shoot the boulder
+				//If the right bumper is pressed it will rotate away from the robot
+				m_leftLauncherMotor.SetSpeed(launcherMotorSpeed);//Run lefty launcher motor at a quarter power
+				m_rightLauncherMotor.SetSpeed(-launcherMotorSpeed);//Run righty launcher motor at a quarter power
+			}
+			else {
+				m_leftLauncherMotor.SetSpeed(0.0);//Run lefty launcher motor at a quarter power
+				m_rightLauncherMotor.SetSpeed(0.0);//Run righty launcher motor at a quarter power
+			}
+
+
+			// *SHOOTER*(servo)
+			if (m_benController.GetRawButton(RedBtn)) { // retract the shooter
+				m_servo.SetAngle(shooterRetractAngle);
+			}
+			else if (m_benController.GetRawButton(BlueBtn)) {  // Load the shooter
+				m_servo.SetAngle(shooterLoadAngle);
+			}
+
+
+			//this is for the Launcher					//tested
+			if (m_benController.GetRawAxis(LeftYAxis) < -JOYSTICK_DEADBAND) { //need to declaring vars.
+				//If joystick is pushed away from the operator along the Y axis
+				//Deadband (0.1) used to prevent unwanted movement
+				if (m_topLimitSwitch.Get()) {
+					//If the top limit switch is not pressed
+					m_elevMotor.SetSpeed(-0.5 * (m_benController.GetRawAxis(LeftYAxis)));//Run elevation motor at a quarter power
+				}
+				else {		//If top limit switch is pressed
+					m_elevMotor.SetSpeed(0.0);		//Stop launcher motor
+				}
+			}
+			else if (m_benController.GetRawAxis(LeftYAxis)  > JOYSTICK_DEADBAND) {
+				//If joystick is pulled towards operator along the Y axis
+				//Deadband (0.1) used to prevent unwanted movement
+				if (m_bottomLimitSwitch.Get()) {
+					//If bottom limit switch is not pressed
+					//Switch normally open
+					m_elevMotor.SetSpeed(-0.25 * (m_benController.GetRawAxis(LeftYAxis) ));
+				}
+				else {
+					m_elevMotor.SetSpeed(0.0);
+				}
+			}
+			else {
+				//need to handle the deadband
+				m_elevMotor.SetSpeed(0.0);
+			}	//end if outside deadband -- else
+
+		}
+
+};
+
+
+START_ROBOT_CLASS(Robot)
+// made by Arthur, Danny, Aaron, Alex, and Richard
